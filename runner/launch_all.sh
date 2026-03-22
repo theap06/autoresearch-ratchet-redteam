@@ -17,6 +17,16 @@ for cmd in tmux ollama python3; do
   fi
 done
 
+# Warn if Anthropic key is missing (required for llm_* monitored runs)
+if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+  echo "WARNING: ANTHROPIC_API_KEY is not set. LLM-monitored runs will fail."
+  echo "  Set it with: export ANTHROPIC_API_KEY=sk-ant-..."
+  echo "  Continuing in 5 seconds — Ctrl-C to abort."
+  sleep 5
+else
+  echo "ANTHROPIC_API_KEY is set (${#ANTHROPIC_API_KEY} chars)."
+fi
+
 # Parse config via Python
 read -r OLLAMA_MODEL OLLAMA_GPU OLLAMA_HOST < <(python3 - <<'EOF'
 import yaml
@@ -94,7 +104,8 @@ mkdir -p results/
 FIRST=1
 while IFS=" " read -r RUN_NAME GPU; do
   mkdir -p "results/${RUN_NAME}"
-  CMD="python runner/experiment_wrapper.py --config ${CONFIG} --run-name ${RUN_NAME} 2>&1 | tee results/${RUN_NAME}/console.log"
+  # Export ANTHROPIC_API_KEY into each window so llm_* monitors can call Claude
+  CMD="export ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}'; python runner/experiment_wrapper.py --config ${CONFIG} --run-name ${RUN_NAME} 2>&1 | tee results/${RUN_NAME}/console.log"
   if [ "$FIRST" -eq 1 ]; then
     tmux new-session -d -s "$SESSION" -n "$RUN_NAME" "bash -c '${CMD}'"
     FIRST=0

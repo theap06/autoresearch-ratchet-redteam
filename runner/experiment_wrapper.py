@@ -42,7 +42,7 @@ logging.basicConfig(
 logger = logging.getLogger("experiment_wrapper")
 
 TRAIN_MINUTES = 5          # wall-clock training time per experiment
-MAX_EXPERIMENTS = 100      # safety cap
+MAX_EXPERIMENTS = 40       # safety cap (fits in ~6h wall-clock with 8 parallel runs)
 HEARTBEAT_INTERVAL = 60    # seconds between heartbeat writes
 LLM_TIMEOUT = 300          # seconds to wait for LLM response
 HISTORY_WINDOW = 10        # number of past experiments shown to LLM
