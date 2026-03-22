@@ -46,6 +46,7 @@ MAX_EXPERIMENTS = 40       # safety cap (fits in ~6h wall-clock with 8 parallel 
 HEARTBEAT_INTERVAL = 60    # seconds between heartbeat writes
 LLM_TIMEOUT = 300          # seconds to wait for LLM response
 HISTORY_WINDOW = 10        # number of past experiments shown to LLM
+LLM_COST_CAP_USD = 20.0    # hard dollar cap for Anthropic API usage
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +251,7 @@ def _call_llm(
     response = client.chat(
         model=model,
         messages=messages,
-        options={"num_predict": 8192, "temperature": 0.7},
+        options={"num_predict": 16384, "temperature": 0.7},
     )
     raw = response["message"]["content"]
     parsed = _parse_llm_response(raw)
@@ -339,6 +340,7 @@ def _run_monitor(
         "score": result["score"],
         "flagged": result["flagged"],
         "reasons": result.get("reasons", []),
+        "usage": result.get("usage", {}),
     }
 
 
@@ -470,6 +472,23 @@ class ExperimentWrapper:
             # Write proposed change
             train_py_path.write_text(new_train_py)
 
+            # Capture proposed diff before training (needed for reverted experiments)
+            proposed_diff_r = subprocess.run(
+                ["git", "diff", "train.py"], cwd=self.autoresearch_dir,
+                capture_output=True, text=True, check=False,
+            )
+            proposed_diff_text = proposed_diff_r.stdout
+
+            # Syntax check before wasting training time
+            syntax_check = subprocess.run(
+                ["python", "-c", f"import ast; ast.parse(open('train.py').read())"],
+                cwd=self.autoresearch_dir, capture_output=True, text=True,
+            )
+            if syntax_check.returncode != 0:
+                logger.warning("Syntax error in proposed train.py — reverting without training: %s", syntax_check.stderr.strip())
+                _git_revert_unstaged(self.autoresearch_dir)
+                continue
+
             # Run training
             val_bpb, train_stdout = _run_training(
                 self.autoresearch_dir, gpu, seed,
@@ -499,7 +518,7 @@ class ExperimentWrapper:
 
                 # Run monitor
                 if monitor_type != "none":
-                    # Enforce API call cap for LLM monitors
+                    # Enforce API call cap and dollar cap for LLM monitors
                     is_llm_monitor = monitor_type.startswith("llm")
                     if is_llm_monitor and llm_call_count >= max_llm_calls:
                         logger.warning(
@@ -507,6 +526,12 @@ class ExperimentWrapper:
                             llm_call_count, max_llm_calls, experiment_num,
                         )
                         mon = {"score": 0.0, "flagged": False, "reasons": [], "skipped": "cap_reached"}
+                    elif is_llm_monitor and llm_total_cost_usd >= LLM_COST_CAP_USD:
+                        logger.warning(
+                            "LLM cost cap reached ($%.2f/$%.2f) — skipping LLM monitor for experiment %d.",
+                            llm_total_cost_usd, LLM_COST_CAP_USD, experiment_num,
+                        )
+                        mon = {"score": 0.0, "flagged": False, "reasons": [], "skipped": "cost_cap_reached"}
                     else:
                         mon = _run_monitor(
                             diff_text, self.autoresearch_dir,
@@ -534,6 +559,9 @@ class ExperimentWrapper:
                         kept = False
             else:
                 logger.info("REVERTED val_bpb=%.6f >= best=%.6f", val_bpb, self._best_val_bpb)
+                if proposed_diff_text:
+                    diff_file = self.results_dir / "diffs" / f"experiment_{experiment_num}.diff"
+                    diff_file.write_text(proposed_diff_text)
                 _git_revert_unstaged(self.autoresearch_dir)
 
             # Log trajectory
