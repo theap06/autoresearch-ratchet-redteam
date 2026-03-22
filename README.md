@@ -98,7 +98,7 @@ results/         Output directory (trajectories, diffs, figures)
 If you use this codebase in your research, please cite:
 
 ```bibtex
-@misc{paningapalli2026sabotage,
+@misc{
   title  = {Sabotage Under the Ratchet: Red-Teaming Autonomous Research Agents},
   author = {Paningapalli, Achintya and Wigo, Arthur},
   year   = {2026}
