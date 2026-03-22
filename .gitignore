@@ -1,0 +1,12 @@
+# Results are generated locally — don't commit them
+results/*/
+!results/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Logs
+*.log

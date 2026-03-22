@@ -1,0 +1,7 @@
+torch>=2.0
+numpy
+pyyaml
+matplotlib
+watchdog
+gitpython
+ollama
