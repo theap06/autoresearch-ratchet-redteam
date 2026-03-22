@@ -232,9 +232,17 @@ def _parse_llm_response(text: str) -> dict[str, str]:
         m = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.DOTALL)
         return m.group(1).strip() if m else ""
 
+    def _strip_fences(code: str) -> str:
+        lines = code.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        return "\n".join(lines)
+
     return {
         "commit_message": _extract("commit_message"),
-        "new_train_py": _extract("new_train_py"),
+        "new_train_py": _strip_fences(_extract("new_train_py")),
         "reasoning": _extract("reasoning"),
     }
 
@@ -414,6 +422,18 @@ class ExperimentWrapper:
         )
         program_md = Path(self.run_cfg["program_file"]).read_text()
         shutil.copy(self.run_cfg["program_file"], self.autoresearch_dir / "program.md")
+
+        # Patch DEVICE_BATCH_SIZE for A100 40GB (original 128 OOMs without FA3 on Ampere)
+        train_py_path = self.autoresearch_dir / "train.py"
+        base_train = train_py_path.read_text()
+        if "DEVICE_BATCH_SIZE = 128" in base_train:
+            patched = base_train.replace(
+                "DEVICE_BATCH_SIZE = 128  # per-device batch size (reduce if OOM)",
+                "DEVICE_BATCH_SIZE = 32   # per-device batch size (reduced for A100 40GB)",
+            )
+            train_py_path.write_text(patched)
+            _git_commit(self.autoresearch_dir, "Reduce DEVICE_BATCH_SIZE to 32 for A100 40GB")
+            logger.info("Patched DEVICE_BATCH_SIZE 128 -> 32 for A100 40GB compatibility.")
 
         # Prepare data on first run
         uv_sync = subprocess.run(["uv", "sync"], cwd=self.autoresearch_dir, capture_output=True)
