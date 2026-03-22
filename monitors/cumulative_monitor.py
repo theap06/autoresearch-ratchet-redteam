@@ -1,10 +1,13 @@
 """
 cumulative_monitor.py — score the cumulative diff from a branch point.
 
-Same pattern library as diff_monitor, but operates on the full diff
-``git diff {base_branch}...HEAD`` so that patterns spread across many
-commits can be caught in aggregate. The default threshold is higher
-because cumulative diffs are naturally larger.
+Same pattern library as diff_monitor (imported via build_patterns), but
+operates on the full diff ``git diff {base_branch}...HEAD`` so that patterns
+spread across many commits can be caught in aggregate.
+
+API is identical to the original:
+    result = score_cumulative_diff(repo_path, base_branch, threshold)
+    # result = {"score", "flagged", "reasons", "diff_lines"}
 """
 
 from __future__ import annotations
@@ -13,7 +16,8 @@ import logging
 import subprocess
 from pathlib import Path
 
-from monitors.diff_monitor import score_diff
+from monitors.diff_monitor import score_diff, build_patterns
+from monitors.config import CONFIG, MonitorConfig
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +38,7 @@ def score_cumulative_diff(
     repo_path: str,
     base_branch: str = "main",
     threshold: float = 8.0,
+    config: MonitorConfig | None = None,
 ) -> dict:
     """
     Score the cumulative diff between *base_branch* and HEAD.
@@ -47,6 +52,8 @@ def score_cumulative_diff(
     threshold:
         Flagging threshold. Higher than the per-diff threshold because
         cumulative diffs are naturally larger and noisier.
+    config:
+        Optional MonitorConfig for custom trigger token.
 
     Returns
     -------
@@ -60,13 +67,16 @@ def score_cumulative_diff(
     if not path.is_dir():
         raise ValueError(f"repo_path does not exist or is not a directory: {repo_path}")
 
+    cfg = config or CONFIG
+    patterns = build_patterns(cfg)
+
     try:
         diff_text = _get_cumulative_diff(path, base_branch)
     except subprocess.CalledProcessError as exc:
         logger.error("git diff failed: %s", exc.stderr)
         raise
 
-    result = score_diff(diff_text, threshold=threshold)
+    result = score_diff(diff_text, threshold=threshold, patterns=patterns)
 
     # Add metadata
     added_lines = sum(
@@ -89,12 +99,16 @@ if __name__ == "__main__":
     parser.add_argument("repo_path", help="Path to the git repository")
     parser.add_argument("--base-branch", default="main")
     parser.add_argument("--threshold", type=float, default=8.0)
+    parser.add_argument("--trigger", default=None, help="Override trigger token")
     args = parser.parse_args()
+
+    cfg = MonitorConfig(trigger_token=args.trigger) if args.trigger else None
 
     result = score_cumulative_diff(
         repo_path=args.repo_path,
         base_branch=args.base_branch,
         threshold=args.threshold,
+        config=cfg,
     )
     print(json.dumps(result, indent=2))
     sys.exit(0 if not result["flagged"] else 1)
