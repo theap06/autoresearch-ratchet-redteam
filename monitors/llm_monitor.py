@@ -124,39 +124,81 @@ a covert backdoor component. Respond with JSON only."""
 # ---------------------------------------------------------------------------
 
 def _call_claude(system: str, user: str, api_key: str | None = None) -> dict:
-    """Call Claude API and parse JSON response."""
+    """Call Claude API and parse JSON response. Returns parsed dict + usage metadata."""
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not set.")
 
+    _RETRY_DELAYS = [5, 15, 30]  # seconds — backs off on 429 / transient errors
+
+    usage: dict = {}
+
     if _HAS_ANTHROPIC:
         client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1024,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-        )
-        raw_text = response.content[0].text
+        for attempt, delay in enumerate([0] + _RETRY_DELAYS):
+            if delay:
+                time.sleep(delay)
+            try:
+                response = client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=1024,
+                    system=system,
+                    messages=[{"role": "user", "content": user}],
+                )
+                raw_text = response.content[0].text
+                usage = {
+                    "input_tokens": response.usage.input_tokens,
+                    "output_tokens": response.usage.output_tokens,
+                    # Sonnet pricing: $3/MTok in, $15/MTok out (as of 2025)
+                    "estimated_cost_usd": round(
+                        response.usage.input_tokens * 3e-6
+                        + response.usage.output_tokens * 15e-6,
+                        6,
+                    ),
+                }
+                break
+            except anthropic.RateLimitError:
+                if attempt < len(_RETRY_DELAYS):
+                    continue
+                raise
     else:
-        data = json.dumps({
-            "model": "claude-sonnet-4-20250514",
-            "max_tokens": 1024,
-            "system": system,
-            "messages": [{"role": "user", "content": user}],
-        }).encode()
-        req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
-            data=data,
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-            },
-        )
-        with urllib.request.urlopen(req) as resp:
-            result = json.loads(resp.read())
-        raw_text = result["content"][0]["text"]
+        for attempt, delay in enumerate([0] + _RETRY_DELAYS):
+            if delay:
+                time.sleep(delay)
+            try:
+                data = json.dumps({
+                    "model": "claude-sonnet-4-20250514",
+                    "max_tokens": 1024,
+                    "system": system,
+                    "messages": [{"role": "user", "content": user}],
+                }).encode()
+                req = urllib.request.Request(
+                    "https://api.anthropic.com/v1/messages",
+                    data=data,
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-api-key": api_key,
+                        "anthropic-version": "2023-06-01",
+                    },
+                )
+                with urllib.request.urlopen(req) as resp:
+                    result = json.loads(resp.read())
+                raw_text = result["content"][0]["text"]
+                u = result.get("usage", {})
+                usage = {
+                    "input_tokens": u.get("input_tokens", 0),
+                    "output_tokens": u.get("output_tokens", 0),
+                    "estimated_cost_usd": round(
+                        u.get("input_tokens", 0) * 3e-6
+                        + u.get("output_tokens", 0) * 15e-6,
+                        6,
+                    ),
+                }
+                break
+            except Exception as exc:
+                if attempt < len(_RETRY_DELAYS):
+                    continue
+                raise
 
     # Parse JSON (strip markdown fences if present)
     clean = raw_text.strip()
@@ -166,7 +208,9 @@ def _call_claude(system: str, user: str, api_key: str | None = None) -> dict:
         clean = clean.rsplit("```", 1)[0]
     clean = clean.strip()
 
-    return json.loads(clean)
+    parsed = json.loads(clean)
+    parsed["_usage"] = usage
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +280,7 @@ def score_diff_llm(
             "llm_reasoning": str(e),
             "commit_message_consistency": 10.0,
             "consistency_note": "API call failed",
+            "usage": {},
         }
 
     score = float(llm_result.get("suspicion_score", 0))
@@ -256,6 +301,7 @@ def score_diff_llm(
         "commit_message_consistency": consistency,
         "consistency_note": llm_result.get("consistency_note", ""),
         "confidence": llm_result.get("confidence", 0.0),
+        "usage": llm_result.get("_usage", {}),
     }
 
     if use_cache:
