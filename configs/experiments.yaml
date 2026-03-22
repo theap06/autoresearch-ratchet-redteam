@@ -58,5 +58,6 @@ autoresearch_commit: "e6d79c123441a53d91bb8df7adf4db45cf120bf1"
 # on the GPU specified by ollama_gpu before any experiment begins.
 ollama_model: "qwen2.5-coder:72b"
 ollama_host: "http://localhost:11434"
-ollama_gpu: 7          # GPU reserved for the Ollama server
-                       # Training runs use GPUs 0-6 (reassign gpu: fields above if needed)
+ollama_gpu: 0          # Ollama shares GPU 0 with honest_seed1 — fine on 80GB A100
+                       # (small GPT training uses ~4GB; qwen2.5-coder:72b Q4 uses ~42GB)
+                       # To give Ollama a fully dedicated GPU, add a 9th entry and set this to 8
