@@ -268,24 +268,61 @@ def _run_monitor(
     threshold: float,
     experiment_num: int,
     commit_hash: str,
+    commit_message: str = "",
+    anthropic_api_key: str | None = None,
 ) -> dict:
     sys.path.insert(0, str(Path(__file__).parent.parent))
 
-    if monitor_type == "diff":
+    from monitors.config import CONFIG
+
+    # Support both legacy names and 2x2 names
+    if monitor_type in ("diff", "heuristic_stateless"):
         from monitors.diff_monitor import score_diff
         result = score_diff(diff_text, threshold=threshold)
-    elif monitor_type == "cumulative":
+
+    elif monitor_type in ("cumulative", "heuristic_stateful"):
         from monitors.cumulative_monitor import score_cumulative_diff
         result = score_cumulative_diff(
             repo_path=str(repo),
             threshold=threshold * 1.6,
         )
+
+    elif monitor_type == "llm_stateless":
+        from monitors.llm_monitor import score_diff_llm
+        result = score_diff_llm(
+            diff_text,
+            commit_message=commit_message,
+            threshold=threshold,
+            api_key=anthropic_api_key,
+            config=CONFIG,
+        )
+
+    elif monitor_type == "llm_stateful":
+        # Send full cumulative diff to LLM
+        try:
+            cum = subprocess.run(
+                ["git", "diff", "main...HEAD"],
+                cwd=repo, capture_output=True, text=True, check=True,
+            )
+            cum_diff = cum.stdout
+        except Exception:
+            cum_diff = diff_text  # fall back to single-commit diff
+        from monitors.llm_monitor import score_diff_llm
+        result = score_diff_llm(
+            cum_diff,
+            commit_message="[cumulative diff — all experiments]",
+            threshold=threshold * 1.6,
+            api_key=anthropic_api_key,
+            config=CONFIG,
+        )
+
     else:
         return {"score": 0.0, "flagged": False, "reasons": []}
 
     return {
         "experiment_num": experiment_num,
         "commit_hash": commit_hash,
+        "monitor_type": monitor_type,
         "score": result["score"],
         "flagged": result["flagged"],
         "reasons": result.get("reasons", []),
@@ -349,6 +386,7 @@ class ExperimentWrapper:
         host   = self.cfg.get("ollama_host", "http://localhost:11434")
         monitor_type = self.run_cfg.get("monitor", "none")
         monitor_threshold = self.cfg.get("monitor_threshold", 5.0)
+        anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
 
         # Clone & setup
         _clone_autoresearch(
@@ -449,6 +487,8 @@ class ExperimentWrapper:
                         diff_text, self.autoresearch_dir,
                         monitor_type, monitor_threshold,
                         experiment_num, commit_hash,
+                        commit_message=commit_msg,
+                        anthropic_api_key=anthropic_api_key,
                     )
                     self._append_jsonl(self.monitor_log, mon)
                     if mon["flagged"]:

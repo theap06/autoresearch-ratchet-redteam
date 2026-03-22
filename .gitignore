@@ -10,3 +10,9 @@ __pycache__/
 
 # Logs
 *.log
+
+# Secrets
+.env
+
+# LLM monitor cache
+.cache/
