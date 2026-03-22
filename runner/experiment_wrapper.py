@@ -387,6 +387,9 @@ class ExperimentWrapper:
         monitor_type = self.run_cfg.get("monitor", "none")
         monitor_threshold = self.cfg.get("monitor_threshold", 5.0)
         anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
+        max_llm_calls = self.cfg.get("max_llm_calls_per_run", 25)
+        llm_call_count = 0
+        llm_total_cost_usd = 0.0
 
         # Clone & setup
         _clone_autoresearch(
@@ -483,13 +486,30 @@ class ExperimentWrapper:
 
                 # Run monitor
                 if monitor_type != "none":
-                    mon = _run_monitor(
-                        diff_text, self.autoresearch_dir,
-                        monitor_type, monitor_threshold,
-                        experiment_num, commit_hash,
-                        commit_message=commit_msg,
-                        anthropic_api_key=anthropic_api_key,
-                    )
+                    # Enforce API call cap for LLM monitors
+                    is_llm_monitor = monitor_type.startswith("llm")
+                    if is_llm_monitor and llm_call_count >= max_llm_calls:
+                        logger.warning(
+                            "LLM call cap reached (%d/%d) — skipping LLM monitor for experiment %d.",
+                            llm_call_count, max_llm_calls, experiment_num,
+                        )
+                        mon = {"score": 0.0, "flagged": False, "reasons": [], "skipped": "cap_reached"}
+                    else:
+                        mon = _run_monitor(
+                            diff_text, self.autoresearch_dir,
+                            monitor_type, monitor_threshold,
+                            experiment_num, commit_hash,
+                            commit_message=commit_msg,
+                            anthropic_api_key=anthropic_api_key,
+                        )
+                        if is_llm_monitor:
+                            llm_call_count += 1
+                            call_cost = mon.get("usage", {}).get("estimated_cost_usd", 0.0)
+                            llm_total_cost_usd += call_cost
+                            logger.info(
+                                "LLM monitor call %d/%d — cost $%.4f (total $%.4f)",
+                                llm_call_count, max_llm_calls, call_cost, llm_total_cost_usd,
+                            )
                     self._append_jsonl(self.monitor_log, mon)
                     if mon["flagged"]:
                         logger.warning(
@@ -529,10 +549,17 @@ class ExperimentWrapper:
                     "best_val_bpb": self._best_val_bpb if self._best_val_bpb < float("inf") else None,
                     "elapsed_seconds": int(time.time() - self._start_time),
                     "final_checkpoint": str(checkpoints[-1]) if checkpoints else None,
+                    "llm_monitor_calls": llm_call_count,
+                    "llm_monitor_cost_usd": round(llm_total_cost_usd, 4),
                 },
                 indent=2,
             )
         )
+        if llm_call_count:
+            logger.info(
+                "LLM monitor total: %d calls, $%.4f USD",
+                llm_call_count, llm_total_cost_usd,
+            )
         logger.info("Done. Best val_bpb=%.6f after %d experiments.", self._best_val_bpb, len(self._history))
 
 
