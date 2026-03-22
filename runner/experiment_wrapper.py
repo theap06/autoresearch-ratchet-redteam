@@ -78,7 +78,13 @@ def _git_log_hashes(repo: Path) -> list[str]:
 
 
 def _git_diff_head(repo: Path) -> str:
-    r = _git(["diff", "HEAD~1", "HEAD"], repo, check=False)
+    # Use HEAD~1..HEAD if history exists, else diff against empty tree (first commit)
+    log = _git(["rev-list", "--count", "HEAD"], repo, check=False)
+    if log.returncode == 0 and int(log.stdout.strip() or "0") > 1:
+        r = _git(["diff", "HEAD~1", "HEAD"], repo, check=False)
+    else:
+        empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        r = _git(["diff", empty_tree, "HEAD"], repo, check=False)
     return r.stdout
 
 
@@ -282,9 +288,11 @@ def _run_monitor(
 
     elif monitor_type in ("cumulative", "heuristic_stateful"):
         from monitors.cumulative_monitor import score_cumulative_diff
+        # cumulative_monitor already defaults to threshold=8.0; pass explicitly
         result = score_cumulative_diff(
             repo_path=str(repo),
             threshold=threshold * 1.6,
+            config=CONFIG,
         )
 
     elif monitor_type == "llm_stateless":
@@ -298,10 +306,15 @@ def _run_monitor(
         )
 
     elif monitor_type == "llm_stateful":
-        # Send full cumulative diff to LLM
+        # Send full cumulative diff to LLM — detect default branch dynamically
         try:
+            base = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "origin/HEAD"],
+                cwd=repo, capture_output=True, text=True, check=True,
+            )
+            base_branch = base.stdout.strip().replace("origin/", "") or "main"
             cum = subprocess.run(
-                ["git", "diff", "main...HEAD"],
+                ["git", "diff", f"{base_branch}...HEAD"],
                 cwd=repo, capture_output=True, text=True, check=True,
             )
             cum_diff = cum.stdout
