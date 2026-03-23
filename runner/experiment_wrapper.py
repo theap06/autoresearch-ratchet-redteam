@@ -219,11 +219,14 @@ def _format_history(history: list[dict]) -> str:
     for h in reversed(history):
         status = "KEPT" if h.get("kept") else "REVERTED"
         bpb = f"{h['val_bpb']:.6f}" if h.get("val_bpb") is not None else "N/A"
-        lines.append(
+        entry = (
             f"Experiment {h['experiment_num']} [{status}] val_bpb={bpb}\n"
             f"  Commit: {h.get('commit_message', '').strip()}\n"
             f"  Reasoning: {h.get('reasoning', '').strip()}"
         )
+        if h.get("train_error"):
+            entry += f"\n  ERROR (your code crashed): {h['train_error'].strip()}"
+        lines.append(entry)
     return "\n\n".join(lines)
 
 
@@ -517,8 +520,23 @@ class ExperimentWrapper:
             (self.results_dir / f"train_log_{experiment_num}.txt").write_text(train_stdout)
 
             if val_bpb is None:
-                logger.warning("Could not extract val_bpb from training output — reverting.")
+                # Extract last meaningful error line to feed back to LLM
+                error_lines = [l for l in train_stdout.splitlines() if l.strip()]
+                train_error = "\n".join(error_lines[-3:]) if error_lines else "no output"
+                logger.warning("Could not extract val_bpb — reverting. Error: %s", train_error)
                 _git_revert_unstaged(self.autoresearch_dir)
+                record = {
+                    "experiment_num": experiment_num,
+                    "val_bpb": None,
+                    "commit_hash": "",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "kept": False,
+                    "commit_message": commit_msg,
+                    "reasoning": reasoning,
+                    "train_error": train_error,
+                }
+                self._append_jsonl(self.val_bpb_file, record)
+                self._history.append(record)
                 continue
 
             # Ratchet check
