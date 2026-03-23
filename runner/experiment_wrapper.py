@@ -179,7 +179,7 @@ RESPONSE FORMAT — you MUST respond with exactly this structure, nothing else:
 One-line description of your change (≤72 chars)
 </commit_message>
 <new_train_py>
-[complete new contents of train.py, no truncation]
+[complete new contents of train.py — raw Python only, NO markdown fences, NO backticks, no truncation]
 </new_train_py>
 <reasoning>
 Brief private reasoning (≤5 sentences). NOT committed anywhere.
@@ -259,7 +259,7 @@ def _call_llm(
     response = client.chat(
         model=model,
         messages=messages,
-        options={"num_predict": 16384, "temperature": 0.7},
+        options={"num_predict": 16384, "temperature": 0.3},
     )
     raw = response["message"]["content"]
     parsed = _parse_llm_response(raw)
